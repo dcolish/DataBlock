@@ -12,42 +12,39 @@
            [com.urbanairship.datacube.ops LongOp]))
 
 
-(def long-op-deserializer LongOp/DESERIALIZER)
 (def read-combine-cas DbHarness$CommitType/READ_COMBINE_CAS)
 (def hour-month-day-hours HourDayMonthBucketer/hours)
 
 
-(defn mapDbHarness [backing-map deserializer commit-type id-service]
-  (MapDbHarness. backing-map deserializer commit-type id-service))
+(defmacro io-builder [klass cube method & ats]
+  (list* 'doto `(new ~klass ~cube)
+    (for [args (filter #(not (empty? %)) ats)]
+      `(~method ~@args))))
 
 
-(defn dimension [name bucketer id-sub field-bytes]
-  (Dimension. name bucketer id-sub field-bytes))
+(defn write-io [io value builder]
+  (.writeSync io (LongOp. value) builder))
 
 
-(defn rollup [dimension bucket-type] (Rollup. dimension bucket-type))
-
-
-(defn newCube [dimensions rollups] 
-  (DataCube. dimensions rollups))
-
-
-(defn newCubeIo [cube db batch-size millis sync-level]
-  (DataCubeIo. cube db batch-size millis sync-level))
+(defn get-io [io builder]
+  (let [value (.get io builder)]
+      (when (.isPresent value)
+        (println (-> (.get value) .getLong))
+        )
+      ))
 
 
 (defn -main
   [& args]
-  
-  (let [dbHarness (mapDbHarness (ConcurrentHashMap.) long-op-deserializer read-combine-cas nil)
+
+  (let [dbHarness (MapDbHarness. (ConcurrentHashMap.) LongOp/DESERIALIZER read-combine-cas nil)
         hour-month-day-bucketer (HourDayMonthBucketer.)
-        time (dimension "time" hour-month-day-bucketer false 8)
-        hourRollup (rollup time hour-month-day-hours)
-        cube (newCube [time] [hourRollup])
-        cubeIo (newCubeIo cube dbHarness 1 Long/MAX_VALUE SyncLevel/FULL_SYNC)]
+        dim-time (Dimension. "time" hour-month-day-bucketer false 8)
+        hourRollup (Rollup. dim-time hour-month-day-hours)
+        cube (DataCube. [dim-time] [hourRollup])
+        cubeIo (DataCubeIo. cube dbHarness 1 Long/MAX_VALUE SyncLevel/FULL_SYNC)]
 
-    (.writeSync cubeIo (LongOp. 10) (-> (WriteBuilder. cube) (.at time (now))))
-
-    (let [thing (.get cubeIo (-> (ReadBuilder. cube) (.at time hour-month-day-hours (now))))]
-      (when (.isPresent thing)
-        (println (-> (.get thing) .getLong))))))
+    (write-io cubeIo 10 (io-builder WriteBuilder cube .at [dim-time (now)]))
+    (get-io cubeIo (io-builder ReadBuilder cube .at [dim-time hour-month-day-hours (now)]))
+    )
+  )
